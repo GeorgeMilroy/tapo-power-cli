@@ -25,7 +25,7 @@ $ tapo-power off "Tapo P100"
 Tapo plugs are cheap and everywhere, but controlling them from a script or an AI agent usually means writing Python against an undocumented, changing protocol. `tapo-power` puts that behind four commands:
 
 - **Talks to the plug directly over your Wi-Fi network.** Switching doesn't go through TP-Link's cloud, and it keeps working if the internet is down.
-- **Built for agents.** Every command prints exactly one JSON object and exits with a meaningful code, so an LLM can call it and check the result without parsing prose.
+- **Friendly for people, precise for agents.** In a terminal you get a colourful, readable display. When a script or AI agent runs it, every command prints exactly one JSON object and exits with a meaningful code.
 - **Confirms what happened.** After `on` or `off` it reads the state back from the plug, so `"ok": true` means the plug really did switch (on a power strip, every socket did).
 - **Works on current firmware.** It supports the newer TPAP login that recent Tapo firmware uses, which many older libraries can't handle.
 - **One-step setup.** `tapo-power setup` asks for your login, checks it against your devices and saves it. You never edit a file by hand.
@@ -41,6 +41,40 @@ Tapo plugs are cheap and everywhere, but controlling them from a script or an AI
 Tested on real hardware with a **P100** (UK, TPAP firmware). The other models are supported by the libraries underneath (see [How it works](#how-it-works)) but haven't been tested with this tool yet. Reports are welcome.
 
 ## Install
+
+### Option A: download the program (no Python needed)
+
+Download the file for your computer from the [latest release](https://github.com/GeorgeMilroy/tapo-power-cli/releases/latest):
+
+| Computer | File |
+|---|---|
+| Windows | `tapo-power.exe` |
+| Mac (Apple silicon) | `tapo-power-macos-arm64` |
+| Linux (x64) | `tapo-power-linux-x64` |
+
+**Windows:** double-click `tapo-power.exe`. It installs itself, asks for your Tapo login, and you're done. Open a new terminal and `tapo-power` works anywhere:
+
+```console
+PS> tapo-power list
+PS> tapo-power off tapo-p100
+```
+
+(It installs to `%LOCALAPPDATA%\Programs\tapo-power` and adds that folder to your user PATH. Running `.\tapo-power.exe install` from a terminal does the same without the login step.)
+
+**Mac / Linux:** in a terminal, in the download folder:
+
+```bash
+chmod +x tapo-power-*                     # make it runnable
+xattr -d com.apple.quarantine tapo-power-macos-arm64   # Mac only
+./tapo-power-* install                    # copies it to ~/.local/bin as `tapo-power`
+tapo-power setup
+```
+
+If `~/.local/bin` isn't on your PATH, `install` tells you the line to add to your shell profile.
+
+The download isn't code-signed, so on Windows SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**. To remove it later, run `tapo-power uninstall`; your saved login is kept.
+
+### Option B: install with Python
 
 You need Python 3.11 or newer. The recommended way is [pipx](https://pipx.pypa.io), which installs `tapo-power` as a standalone command:
 
@@ -74,12 +108,24 @@ pip install git+https://github.com/GeorgeMilroy/tapo-power-cli
 **2. Run setup** and enter the email and password you use for the Tapo app:
 
 ```console
-$ tapo-power setup --text
-Tapo app account email: you@example.com
-Tapo app password (hidden):
-saved login to C:\Users\you\AppData\Roaming\tapo-power\config.toml
-  tapo-p100: Tapo P100 (P100 @ 192.168.1.15): ON
-try: tapo-power status tapo-p100
+$ tapo-power setup
+
+  Sign in with your Tapo app account.
+
+  Email › you@example.com
+  Password ›
+
+  ✓ Login saved  C:\Users\you\AppData\Roaming\tapo-power\config.toml
+
+  Your devices
+  ╭───────────┬───────────┬───────┬───────┬──────────────╮
+  │ Name      │ Alias     │ State │ Model │ IP           │
+  ├───────────┼───────────┼───────┼───────┼──────────────┤
+  │ Tapo P100 │ tapo-p100 │ ● ON  │ P100  │ 192.168.1.15 │
+  ╰───────────┴───────────┴───────┴───────┴──────────────╯
+
+  Try it:
+    tapo-power off tapo-p100
 ```
 
 Setup logs in to each device it finds. If every device that answers rejects the login, it reports a wrong password and saves nothing. Devices on someone else's Tapo account are listed as warnings and skipped. If no device answers at all (for example on a guest network), setup saves the login anyway with `"verified": false` and a warning.
@@ -104,6 +150,8 @@ tapo-power list                           show every device on the network
 tapo-power status <target>                is it on or off?
 tapo-power off    <target> [--child N]    switch off
 tapo-power on     <target> [--child N]    switch on
+tapo-power install / uninstall            downloaded program only: add to / remove from PATH
+tapo-power                                welcome screen with the commands above
 ```
 
 **`<target>`** can be any of:
@@ -122,14 +170,15 @@ If two devices share a name, a name lookup refuses to guess: it lists the matche
 
 | Option | Meaning |
 |---|---|
-| `--text` | human-readable output instead of JSON |
+| `--json` | always print JSON (the default when not in a terminal) |
+| `--text` | always print the readable display (the default in a terminal) |
 | `--timeout SECONDS` | network timeout, 1–60, default 10 |
 | `--username`, `--password` | use this login instead of the saved one |
 | `--no-discover` | `setup` only: save the login without contacting any device |
 
 ### Output
 
-Every command prints a single JSON object on stdout, including when you get the arguments wrong. Only `--help` and `--version` print plain text.
+Typed in a terminal, `tapo-power` shows a readable, coloured display. When its output goes to a script or an AI agent instead (anything that isn't a terminal), every command prints a single JSON object on stdout, including when you get the arguments wrong. Add `--json` to get JSON in a terminal too. Only `--help` and `--version` always print plain text. Set `NO_COLOR=1` to turn colours off.
 
 ```json
 {"ok": true, "action": "status", "name": "Tapo P100", "ip": "192.168.1.15", "model": "P100", "on": true}
@@ -154,10 +203,10 @@ Power strips add a `children` list (`{"index": 1, "name": "...", "on": true}` pe
 
 ```markdown
 ## Smart plugs
-Control the Tapo smart plugs with the `tapo-power` command. It prints one JSON object.
-- `tapo-power off <alias>` / `tapo-power on <alias>`: switch a device
-- `tapo-power status <alias>`: check a device
-- `tapo-power list`: see which devices exist (only if you need to)
+Control the Tapo smart plugs with the `tapo-power` command. Always add --json.
+- `tapo-power off <alias> --json` / `tapo-power on <alias> --json`: switch a device
+- `tapo-power status <alias> --json`: check a device
+- `tapo-power list --json`: see which devices exist (only if you need to)
 Devices: tapo-p100 = desk lamp, heater = office heater   <- replace with yours
 "ok": true means the command worked, and "on" is the confirmed state.
 Exit code 3 means the login was rejected. Don't retry it; tell the user,
@@ -232,6 +281,13 @@ heater    = "192.168.1.41"
 <summary><b>The IP address keeps changing</b></summary>
 
 Reserve a fixed IP for each plug in your router's DHCP settings, then run `tapo-power setup` again to refresh the aliases.
+
+</details>
+
+<details>
+<summary><b>My antivirus flags <code>tapo-power.exe</code></b></summary>
+
+The download is built with PyInstaller, which some antivirus tools flag on reflex. You can check the build yourself: it's made by the public [release workflow](.github/workflows/release.yml) from this repository's source. Or skip the exe and use [Option B](#option-b-install-with-python).
 
 </details>
 

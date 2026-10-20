@@ -169,7 +169,8 @@ def test_error_mapping(env, capsys, exc, expected):
 def test_global_flag_before_subcommand(env, capsys):
     env["192.168.1.40"] = FakeSwitch("Desk Lamp")
     assert cli.main(["--text", "off", "desk"]) == 0
-    assert capsys.readouterr().out.strip() == "Desk Lamp (P100 @ 192.168.1.40): OFF"
+    out = capsys.readouterr().out
+    assert "Desk Lamp is now" in out and "OFF" in out and "192.168.1.40" in out
 
 
 def test_tapo_error_classification():

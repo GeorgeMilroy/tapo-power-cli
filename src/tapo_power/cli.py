@@ -14,9 +14,13 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+from contextlib import nullcontext
 from typing import Any
 
 from . import __version__, backends
+from . import install as installer
+from . import ui
 from .backends import AuthError, BackendError, Socket, Switch
 from .config import (
     Config,
@@ -279,8 +283,18 @@ class JsonArgumentParser(argparse.ArgumentParser):
     """Reports usage errors as JSON too, so agents always get parseable output."""
 
     def error(self, message: str):
-        print(json.dumps({"ok": False, "error": f"{message} (see '{self.prog} --help')"}))
+        if wants_human(sys.argv[1:]):
+            ui.error(message, f"See {self.prog} --help")
+        else:
+            print(json.dumps({"ok": False, "error": f"{message} (see '{self.prog} --help')"}))
         sys.exit(EXIT_USAGE)
+
+
+def wants_human(argv: list[str], text: bool = False, as_json: bool = False) -> bool:
+    """Friendly output for people in a terminal; JSON for scripts and agents."""
+    if as_json or "--json" in argv:
+        return False
+    return text or "--text" in argv or ui.is_terminal()
 
 
 def timeout_seconds(value: str) -> int:
@@ -317,10 +331,16 @@ def common_options(suppress: bool) -> argparse.ArgumentParser:
         help="network timeout in seconds, 1-60 (default 10)",
     )
     common.add_argument(
+        "--json",
+        action="store_true",
+        default=d(False),
+        help="always print JSON (the default when not run in a terminal)",
+    )
+    common.add_argument(
         "--text",
         action="store_true",
         default=d(False),
-        help="human-readable output instead of JSON",
+        help="always print human-readable output (the default in a terminal)",
     )
     return common
 
@@ -330,7 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
         prog="tapo-power",
         description="Switch TP-Link Tapo smart plugs/switches on and off. "
-        "Prints one JSON object; exit 0=ok, 1=device/network error, "
+        "In a terminal it prints friendly output; otherwise (scripts, AI agents) "
+        "one JSON object. Exit 0=ok, 1=device/network error, "
         "2=usage/config error, 3=authentication failure.",
         parents=[common_options(suppress=False)],
     )
@@ -347,6 +368,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="just save the credentials, don't log in to any device",
     )
+    for name, text in (
+        ("install", "downloaded program only: make `tapo-power` work in any terminal"),
+        ("uninstall", "undo 'install' (your saved login is kept)"),
+    ):
+        p = sub.add_parser(name, parents=[common], help=text)
+        p.add_argument(
+            "--dir",
+            type=Path,
+            help=f"install folder (default: {installer.default_install_dir()})",
+        )
     sub.add_parser("list", parents=[common], help="discover devices on the LAN")
     for name, text in (
         ("status", "show on/off state"),
@@ -386,11 +417,23 @@ def prompt_credentials(args) -> tuple[str, str]:
         )
     # Prompts go to stderr so stdout stays a single JSON object.
     try:
+        if args.human:
+            ui.console().print(
+                "  Sign in with your [bold]Tapo app[/] account.\n"
+                "  [dim]First turn on Third-Party Compatibility in the Tapo app "
+                "(Me > Third-Party Services).[/]\n"
+            )
         while not user:
-            print("Tapo app account email: ", end="", file=sys.stderr, flush=True)
-            user = input().strip()
+            if args.human:
+                user = ui.ask("Email").strip()
+            else:
+                print("Tapo app account email: ", end="", file=sys.stderr, flush=True)
+                user = input().strip()
         while not pw:
-            pw = getpass.getpass("Tapo app password (hidden): ", stream=sys.stderr)
+            if args.human:
+                pw = ui.ask("Password", password=True)
+            else:
+                pw = getpass.getpass("Tapo app password (hidden): ", stream=sys.stderr)
     except (EOFError, KeyboardInterrupt):
         # isatty() can't be trusted everywhere (Windows reports NUL as a tty).
         print(file=sys.stderr)
@@ -402,38 +445,22 @@ def prompt_credentials(args) -> tuple[str, str]:
     return user, pw
 
 
-def format_text(result: dict[str, Any]) -> str:
-    if not result.get("ok"):
-        return f"error: {result.get('error')}"
-    if result["action"] == "list":
-        lines = [format_device(d) for d in result["devices"]] or ["no devices found"]
-        lines += [f"warning: {e}" for e in result.get("errors", [])]
-        return "\n".join(lines)
-    if result["action"] == "setup":
-        lines = [f"saved login to {result['config']}"]
-        lines += [
-            f"  {d['alias']}: {format_device(d)}" for d in result["devices"]
-        ]
-        if result["devices"]:
-            first = result["devices"][0]["alias"]
-            lines.append(f"try: tapo-power status {first}")
-        if "warning" in result:
-            lines.append(f"warning: {result['warning']}")
-        lines += [f"warning: {e}" for e in result.get("errors", [])]
-        return "\n".join(lines)
-    return format_device(result)
-
-
-def format_device(d: dict[str, Any]) -> str:
-    name = d["name"] + (f"/{d['child']}" if "child" in d else "")
-    line = f"{name} ({d['model']} @ {d['ip']}): {'ON' if d['on'] else 'OFF'}"
-    for c in d.get("children", []):
-        line += f"\n  [{c['index']}] {c['name']}: {'ON' if c['on'] else 'OFF'}"
-    return line
+def spinner_message(args) -> str:
+    if args.command == "list":
+        return "Searching your network..."
+    if args.command == "setup":
+        return "Checking your login and finding your devices..."
+    return f"Talking to {args.target}..."
 
 
 async def run(args) -> tuple[dict[str, Any], int]:
     try:
+        if args.command in ("install", "uninstall"):
+            try:
+                action = getattr(installer, args.command)
+                return action(args.dir), EXIT_OK
+            except installer.InstallError as exc:
+                raise CliError(str(exc), EXIT_USAGE) from exc
         if args.command == "setup":
             try:
                 cfg = load_config()
@@ -447,9 +474,10 @@ async def run(args) -> tuple[dict[str, Any], int]:
         # Hard ceiling so an agent never hangs on an unresponsive network.
         ceiling = args.timeout * 4
         try:
-            result = await asyncio.wait_for(
-                COMMANDS[args.command](args, cfg, creds), timeout=ceiling
-            )
+            with ui.spinner(spinner_message(args)) if args.human else nullcontext():
+                result = await asyncio.wait_for(
+                    COMMANDS[args.command](args, cfg, creds), timeout=ceiling
+                )
         except TimeoutError:
             raise CliError(
                 f"timed out after {ceiling}s; check the device is powered and on "
@@ -472,13 +500,78 @@ async def run(args) -> tuple[dict[str, Any], int]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, EXIT_DEVICE
 
 
+def launched_by_double_click() -> bool:
+    """True when started from Explorer rather than typed in a terminal."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    procs = (ctypes.c_uint32 * 8)()
+    count = ctypes.windll.kernel32.GetConsoleProcessList(procs, 8)
+    # Double-clicked, the console holds only this program (PyInstaller's
+    # one-file exe runs as two processes); from a terminal the shell is
+    # attached to it too.
+    return 0 < count <= (2 if installer.is_frozen() else 1)
+
+
+def guided_install() -> int:
+    """What double-clicking the downloaded program does."""
+    ui.banner()
+    c = ui.console()
+    code = EXIT_OK
+    try:
+        if installer.is_frozen():
+            result = installer.install()
+            ui.ok(f"Installed  [dim]{result['path']}[/]")
+            if result.get("added_to_path"):
+                ui.ok("Added to your PATH")
+        try:
+            cfg = load_config()
+        except ConfigError:
+            cfg = Config()
+        if cfg.username and cfg.password:
+            ui.ok("Your Tapo login is already saved")
+        else:
+            c.print()
+            code = main(["setup", "--text"])
+        c.print()
+        if code == EXIT_OK:
+            c.print(ui.gradient("All set!"))
+            c.print(
+                "  Open a [bold]new[/] terminal (PowerShell or Command Prompt) and type:\n"
+                f"    {ui.command('tapo-power list')}\n"
+                f"    {ui.command('tapo-power off <name>')}"
+            )
+        else:
+            ui.warn("Setup didn't finish. Double-click again to retry.")
+    except installer.InstallError as exc:
+        ui.error(str(exc))
+        code = EXIT_USAGE
+    try:
+        c.input("\n  [dim]Press Enter to close...[/]")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     # Device names can hold emoji/CJK; don't crash on a cp1252 console or pipe.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    ui.reset()
+    if argv is None and len(sys.argv) == 1:
+        if launched_by_double_click():
+            return guided_install()
+        if ui.is_terminal():
+            ui.welcome()
+            return EXIT_OK
     args = build_parser().parse_args(argv)
+    args.human = wants_human([], text=args.text, as_json=args.json)
     result, code = asyncio.run(run(args))
-    print(format_text(result) if args.text else json.dumps(result))
+    if args.human:
+        ui.render(result)
+    else:
+        print(json.dumps(result))
     return code
 
 
