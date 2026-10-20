@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tapo-power-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "LLM-friendly CLI to switch TP-Link Tapo smart plugs and switches on/off"
 readme = "README.md"
 license = "MIT"
