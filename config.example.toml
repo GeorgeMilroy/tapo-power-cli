@@ -1,0 +1,15 @@
+# Easiest: run `tapo-power setup` and it writes this file for you.
+#
+# To write it by hand, save it as
+#   %APPDATA%\tapo-power\config.toml          (Windows)
+#   ~/.config/tapo-power/config.toml          (Linux/macOS)
+# or point the TAPO_POWER_CONFIG environment variable at it.
+
+# Your TP-Link / Tapo app account (used for local device login).
+username = "you@example.com"
+password = "your-tapo-password"
+
+# Friendly names -> IP address or hostname.
+[devices]
+desk = "192.168.1.40"
+heater = "192.168.1.41"
